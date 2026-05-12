@@ -108,6 +108,11 @@ const useStore = create((set, get) => ({
   activeTab: 'camera',
   setActiveTab: (tab) => set({ activeTab: tab }),
 
+  // Normalised primary-hand landmarks for the current frame (set by useMediaPipe).
+  // Used by DatasetRecorder to capture training sequences without touching the loop.
+  rawLandmarks: null,
+  setRawLandmarks: (lm) => set({ rawLandmarks: lm }),
+
   // Hold-to-add
   holdFrames: 0,
   lastDet: null,

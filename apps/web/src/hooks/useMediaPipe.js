@@ -207,9 +207,13 @@ export function useMediaPipe(videoRef, canvasRef) {
         store.clearDetection();
         resetHold(store);
       }
+
+      // Expose normalised landmarks for DatasetRecorder (zero overhead when not recording)
+      store.setRawLandmarks(primaryHand ? normalizeLandmarks(primaryHand) : null);
     } else {
       store.pushBuf({ label: '—', dir: '•', speed: 0 });
       store.clearDetection();
+      store.setRawLandmarks(null);
       resetHold(store);
     }
   }, [videoRef, canvasRef]);

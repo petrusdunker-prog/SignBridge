@@ -9,7 +9,8 @@ import SpeechInput      from './components/SpeechInput.jsx';
 import ConversationView from './components/ConversationView.jsx';
 import ProxyBanner   from './components/ProxyBanner.jsx';
 import SignLibrary   from './components/SignLibrary.jsx';
-import History       from './components/History.jsx';
+import History          from './components/History.jsx';
+import DatasetRecorder from './components/DatasetRecorder.jsx';
 import BottomNav     from './components/BottomNav.jsx';
 import WelcomeModal  from './components/WelcomeModal.jsx';
 
@@ -76,6 +77,7 @@ function RightPanel() {
       <ConversationView />
       <SignLibrary />
       <History />
+      <DatasetRecorder />
     </>
   );
 }
