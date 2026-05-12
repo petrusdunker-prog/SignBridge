@@ -86,8 +86,9 @@ const useStore = create((set, get) => ({
     holdAdd: true,
     buffer: true,
     twoHand: true,
-    tts: true,        // auto-speak AI output
+    tts: true,           // auto-speak AI output
     autoInterpret: true, // auto-interpret after pause in signing
+    faceMesh: false,     // load MediaPipe FaceLandmarker for accurate zone detection (~32 MB)
   },
   toggleSetting: (key) => set((s) => ({
     settings: { ...s.settings, [key]: !s.settings[key] },
@@ -112,6 +113,15 @@ const useStore = create((set, get) => ({
   // Used by DatasetRecorder to capture training sequences without touching the loop.
   rawLandmarks: null,
   setRawLandmarks: (lm) => set({ rawLandmarks: lm }),
+
+  // Face mesh loading state
+  faceMeshLoading: false,
+  setFaceMeshLoading: (v) => set({ faceMeshLoading: v }),
+
+  // LSTM model status: 'none' | 'loading' | 'ready' | 'error'
+  lstmStatus: 'none',
+  lstmClasses: [],
+  setLstmStatus: (s, classes = []) => set({ lstmStatus: s, lstmClasses: classes }),
 
   // Hold-to-add
   holdFrames: 0,

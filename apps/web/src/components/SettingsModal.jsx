@@ -8,6 +8,7 @@ const SETTINGS = [
   { key: 'twoHand',  label: 'Two-hand mode',       desc: 'Detect two-handed signs' },
   { key: 'tts',            label: 'Auto-speak output',    desc: 'Read AI translations aloud (TTS)' },
   { key: 'autoInterpret', label: 'Auto-interpret',       desc: 'Send to AI after 2.5s pause in signing' },
+  { key: 'faceMesh',      label: 'Face mesh (accurate zones)', desc: 'Load FaceLandmarker for precise sign-location detection (~32 MB extra, restart camera)' },
 ];
 
 const TTS_RATES = [

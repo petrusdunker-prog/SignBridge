@@ -11,6 +11,7 @@ import ProxyBanner   from './components/ProxyBanner.jsx';
 import SignLibrary   from './components/SignLibrary.jsx';
 import History          from './components/History.jsx';
 import DatasetRecorder from './components/DatasetRecorder.jsx';
+import LSTMPanel       from './components/LSTMPanel.jsx';
 import BottomNav     from './components/BottomNav.jsx';
 import WelcomeModal  from './components/WelcomeModal.jsx';
 
@@ -78,6 +79,7 @@ function RightPanel() {
       <SignLibrary />
       <History />
       <DatasetRecorder />
+      <LSTMPanel />
     </>
   );
 }

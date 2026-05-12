@@ -5,38 +5,30 @@ import {
   classifyTwoHand, classifySingleHand, classifyLetter, classifyNumber,
   getCurlRatios, handSpread, getZone, dist, normalizeLandmarks,
 } from './useClassifier.js';
+import { predict as lstmPredict, isLoaded as lstmLoaded } from './useLSTM.js';
 
 const HOLD_TARGET = 22;
 
 // ─── Tasks Vision gesture name → ASL sign ─────────────────────────────────────
-// The built-in model recognises 7 generic gestures. We map them to ASL signs,
-// using the hand's Y-position zone to disambiguate same-shape signs.
 const GESTURE_MAP = {
-  // A-hand (fist + thumb up)
   'Thumb_Up':    zone => zone === 'chest'    ? ['SORRY',     92] : ['HELP',      90],
-  // Flat open palm
   'Open_Palm':   zone => zone === 'chin'     ? ['THANK YOU', 93]
                        : zone === 'forehead' ? ['HELLO',     91] : ['PLEASE',    88],
-  // Closed fist (S-hand)
   'Closed_Fist': zone => zone === 'chest'    ? ['TIRED',     80] : ['YES',       87],
-  // V / peace sign
   'Victory':     ()   => ['NO',           91],
-  // ILY hand
   'ILoveYou':    ()   => ['I LOVE YOU',   96],
-  // Single index pointing up
   'Pointing_Up': zone => zone === 'chest'    ? ['ME / I',    88] : ['WHERE',     80],
-  // Thumb down
   'Thumb_Down':  ()   => ['NOT',          82],
 };
 
-// ─── Hand skeleton drawing (no external CDN dependency) ───────────────────────
+// ─── Hand skeleton drawing ────────────────────────────────────────────────────
 const HAND_BONES = [
-  [0,1],[1,2],[2,3],[3,4],          // thumb
-  [0,5],[5,6],[6,7],[7,8],          // index
-  [0,9],[9,10],[10,11],[11,12],     // middle
-  [0,13],[13,14],[14,15],[15,16],   // ring
-  [0,17],[17,18],[18,19],[19,20],   // pinky
-  [5,9],[9,13],[13,17],             // palm arch
+  [0,1],[1,2],[2,3],[3,4],
+  [0,5],[5,6],[6,7],[7,8],
+  [0,9],[9,10],[10,11],[11,12],
+  [0,13],[13,14],[14,15],[15,16],
+  [0,17],[17,18],[18,19],[19,20],
+  [5,9],[9,13],[13,17],
 ];
 
 function drawHand(ctx, lm, w, h, color = 'rgba(45,106,79,.55)') {
@@ -59,26 +51,26 @@ function drawHand(ctx, lm, w, h, color = 'rgba(45,106,79,.55)') {
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 export function useMediaPipe(videoRef, canvasRef) {
   const gestureRef = useRef(null);
+  const faceRef    = useRef(null); // FaceLandmarker — loaded only when faceMesh setting is on
   const animRef    = useRef(null);
   const fpsFrames  = useRef(0);
   const lastFps    = useRef(Date.now());
-
   const lastVideoTime = useRef(-1);
+
+  // Rolling 30-frame buffer of flat 63-float landmark arrays — used by LSTM inference.
+  // Kept in a ref (not store) to avoid 30 Zustand state updates per second.
+  const landmarkBufRef = useRef([]);
 
   const onFrame = useCallback(() => {
     const store = useStore.getState();
     if (!store.camActive) return;
 
-    // Always re-schedule first so errors never kill the loop
     animRef.current = requestAnimationFrame(onFrame);
 
     const video  = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas || !gestureRef.current || video.readyState < 2) return;
 
-    // ── Skip if no new video frame has been decoded yet ───────────────────────
-    // This prevents recognizeForVideo being called 60×/s when the webcam only
-    // delivers 30fps, and avoids redundant GPU work on duplicate frames.
     if (video.currentTime === lastVideoTime.current) return;
     lastVideoTime.current = video.currentTime;
 
@@ -92,15 +84,21 @@ export function useMediaPipe(videoRef, canvasRef) {
       lastFps.current = now;
     }
 
-    // ── Run Tasks Vision gesture recognition ─────────────────────────────────
+    // ── Gesture recognition ───────────────────────────────────────────────────
     let gr;
     try { gr = gestureRef.current.recognizeForVideo(video, now); }
     catch { return; }
 
-    // ── Draw skeleton overlay only ────────────────────────────────────────────
-    // The <video> element underneath already renders the camera feed via CSS.
-    // Drawing it again onto the canvas every frame (ctx.drawImage) was the main
-    // source of slowness — removed. Canvas is transparent; skeleton draws on top.
+    // ── Face mesh (optional, only when FaceLandmarker is loaded) ─────────────
+    let faceLM = null;
+    if (faceRef.current) {
+      try {
+        const fr = faceRef.current.detectForVideo(video, now);
+        faceLM = fr?.faceLandmarks?.[0] || null;
+      } catch { /* silent — face may not be in frame */ }
+    }
+
+    // ── Draw skeleton ─────────────────────────────────────────────────────────
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -109,10 +107,9 @@ export function useMediaPipe(videoRef, canvasRef) {
     const allSides = gr.handednesses || [];
     const handCount = allLM.length;
 
-    store.setStats(fps, handCount, false, false);
+    store.setStats(fps, handCount, !!faceLM, false);
 
     if (store.settings.skeleton) {
-      // Right hand = green, left hand = blue
       allLM.forEach((lm, i) => {
         const side = allSides[i]?.[0]?.categoryName;
         drawHand(ctx, lm, canvas.width, canvas.height,
@@ -120,22 +117,34 @@ export function useMediaPipe(videoRef, canvasRef) {
       });
     }
 
-    // ── Assign hands by handedness ────────────────────────────────────────────
-    // Tasks Vision: "Left" in the result = user's dominant/right hand (due to mirror flip).
-    // We just call them rLM / lLM for the two-hand classifier.
+    // ── Hand assignment ───────────────────────────────────────────────────────
     let rLM = null, lLM = null;
     for (let i = 0; i < allLM.length; i++) {
       if (allSides[i]?.[0]?.categoryName === 'Left') rLM = allLM[i];
       else lLM = allLM[i];
     }
     const primaryHand    = rLM || lLM;
-    const primaryGesture = allGest[0]?.[0]; // top gesture for the first detected hand
+    const primaryGesture = allGest[0]?.[0];
 
     // ── Motion tracking ───────────────────────────────────────────────────────
     if (rLM) pushMotion('R', rLM[0]);
     if (lLM) pushMotion('L', lLM[0]);
     const rVel = getVelocity('R');
     const lVel = getVelocity('L');
+
+    // ── Landmark buffer for LSTM (30-frame rolling window) ────────────────────
+    if (primaryHand) {
+      const norm = normalizeLandmarks(primaryHand);
+      const flat = norm.flatMap(p => [
+        parseFloat(p.x.toFixed(4)),
+        parseFloat(p.y.toFixed(4)),
+        parseFloat((p.z || 0).toFixed(4)),
+      ]);
+      landmarkBufRef.current = [...landmarkBufRef.current, flat].slice(-30);
+    } else {
+      // Zero-vector for frames with no hand — keeps buffer length consistent
+      landmarkBufRef.current = [...landmarkBufRef.current, new Array(63).fill(0)].slice(-30);
+    }
 
     // ── Debug features ────────────────────────────────────────────────────────
     if (primaryHand && store.settings.debug) {
@@ -146,12 +155,12 @@ export function useMediaPipe(videoRef, canvasRef) {
         rVel:   `${rVel.speed} ${rVel.dir}`,
         lVel:   `${lVel.speed} ${lVel.dir}`,
         accel:  `R:${rVel.accel > 0 ? '+' : ''}${rVel.accel}`,
-        zone:   getZone(primaryHand[0], null, null),
+        zone:   getZone(primaryHand[0], faceLM, null),
         spread: spread.toFixed(2),
         ihd:    rLM && lLM ? dist(rLM[0], lLM[0]).toFixed(3) : '—',
         palm:   primaryGesture?.categoryName || '—',
         curl:   curls.map(c => c.toFixed(1)).join(' '),
-        motDir: `R:${rVel.dir} L:${lVel.dir}`,
+        face:   faceLM ? 'yes' : 'no',
       });
     } else {
       store.setFeatures(null);
@@ -161,15 +170,23 @@ export function useMediaPipe(videoRef, canvasRef) {
     let result = null;
 
     if (handCount > 0) {
-      // 1. Motion patterns — STOP (chop), HELP (lift), MORE/FINISHED (two-hand sweep)
-      const motLabel = detectMotionPattern(rVel, lVel);
-      if (motLabel) result = { label: motLabel, conf: 85, source: 'seq' };
+      // 0. LSTM — highest priority when a trained model is loaded
+      if (lstmLoaded() && landmarkBufRef.current.length >= 30) {
+        result = lstmPredict(landmarkBufRef.current);
+      }
 
-      // 2. Tasks Vision ML gesture recognizer — highest quality, covers the core signs
+      // 1. Motion patterns — STOP, HELP, MORE, FINISHED
+      if (!result) {
+        const motLabel = detectMotionPattern(rVel, lVel);
+        if (motLabel) result = { label: motLabel, conf: 85, source: 'seq' };
+      }
+
+      // 2. Tasks Vision ML gesture recognizer
       if (!result && primaryGesture?.categoryName !== 'None' && (primaryGesture?.score ?? 0) > 0.70) {
         const mapper = GESTURE_MAP[primaryGesture.categoryName];
         if (mapper) {
-          const zone = primaryHand ? getZone(primaryHand[0], null, null) : 'neutral';
+          // Use real face landmarks for zone if available, else Y-heuristic
+          const zone = primaryHand ? getZone(primaryHand[0], faceLM, null) : 'neutral';
           const [label, base] = mapper(zone);
           result = {
             label,
@@ -179,22 +196,22 @@ export function useMediaPipe(videoRef, canvasRef) {
         }
       }
 
-      // 3. Two-hand geometry — MORE (static pinch), WANT, HURT, FINISHED (static spread)
+      // 3. Two-hand geometry
       if (!result && store.settings.twoHand && rLM && lLM) {
         const twoLabel = classifyTwoHand(rLM, lLM);
         if (twoLabel) result = { label: twoLabel, conf: 82, source: 'two-hand' };
       }
 
-      // 4. Single-hand geometry fallback — EAT, DRINK, SLEEP, RESTROOM, WATER, PLAY, etc.
+      // 4. Single-hand geometry — now passes real faceLM when available
       if (!result && primaryHand) {
         result = store.mode === 'word'
-          ? classifySingleHand(primaryHand, null, null)
+          ? classifySingleHand(primaryHand, faceLM, null)
           : store.mode === 'letter'
           ? classifyLetter(primaryHand)
           : classifyNumber(primaryHand);
       }
 
-      // Frame buffer + sequence confirmation
+      // Sequence confirmation
       const buf = { label: result?.label || '—', dir: rVel.dir, speed: parseFloat(rVel.speed) };
       store.pushBuf(buf);
       const seq = seqPattern([...store.frameBuf, buf]);
@@ -208,7 +225,6 @@ export function useMediaPipe(videoRef, canvasRef) {
         resetHold(store);
       }
 
-      // Expose normalised landmarks for DatasetRecorder (zero overhead when not recording)
       store.setRawLandmarks(primaryHand ? normalizeLandmarks(primaryHand) : null);
     } else {
       store.pushBuf({ label: '—', dir: '•', speed: 0 });
@@ -237,8 +253,7 @@ export function useMediaPipe(videoRef, canvasRef) {
     if (!gestureRef.current) {
       store.setMpLoading(true);
       try {
-        // Dynamic import keeps the bundle clean — loaded once, cached by the browser
-        const { GestureRecognizer, FilesetResolver } = await import(
+        const { GestureRecognizer, FaceLandmarker, FilesetResolver } = await import(
           /* @vite-ignore */
           'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/vision_bundle.mjs'
         );
@@ -249,7 +264,6 @@ export function useMediaPipe(videoRef, canvasRef) {
 
         gestureRef.current = await GestureRecognizer.createFromOptions(vision, {
           baseOptions: {
-            // Pre-trained ASL gesture model from Google MediaPipe model hub
             modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task',
             delegate: 'GPU',
           },
@@ -259,23 +273,38 @@ export function useMediaPipe(videoRef, canvasRef) {
           minHandPresenceConfidence:  0.5,
           minTrackingConfidence:      0.5,
         });
+
+        // Load FaceLandmarker only if the user has enabled it in settings (~32 MB)
+        if (store.settings.faceMesh && !faceRef.current) {
+          store.setFaceMeshLoading(true);
+          try {
+            faceRef.current = await FaceLandmarker.createFromOptions(vision, {
+              baseOptions: {
+                modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+                delegate: 'GPU',
+              },
+              runningMode: 'VIDEO',
+              numFaces: 1,
+              outputFaceBlendshapes: false,
+              outputFacialTransformationMatrixes: false,
+            });
+          } finally {
+            store.setFaceMeshLoading(false);
+          }
+        }
       } finally {
         store.setMpLoading(false);
       }
     }
 
     const stream = await navigator.mediaDevices.getUserMedia({
-      // 640×480 is plenty for gesture recognition and cuts GPU work by 4× vs 1280×720
       video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
     });
     video.srcObject = stream;
     await video.play();
 
-    // Set canvas dimensions once here — setting them every frame resets the
-    // canvas context (a full GPU flush) and was the main source of dropped frames.
     const canvas = canvasRef.current;
     if (canvas) {
-      // Wait for actual dimensions if metadata hasn't fired yet
       if (!video.videoWidth) {
         await new Promise(res => video.addEventListener('loadedmetadata', res, { once: true }));
       }
@@ -283,7 +312,8 @@ export function useMediaPipe(videoRef, canvasRef) {
       canvas.height = video.videoHeight;
     }
 
-    lastVideoTime.current = -1;
+    landmarkBufRef.current = [];
+    lastVideoTime.current  = -1;
     store.setCamActive(true);
     animRef.current = requestAnimationFrame(onFrame);
   }, [videoRef, onFrame]);
