@@ -27,11 +27,11 @@ const useStore = create((set, get) => ({
   features: null,
   setFeatures: (f) => set({ features: f }),
 
-  // Motion buffer
+  // Motion buffer — 30 frames (~1 s at 30 fps) for sequence confirmation
   frameBuf: [],
   pushBuf: (entry) => set((s) => {
     const next = [...s.frameBuf, entry];
-    return { frameBuf: next.length > 12 ? next.slice(-12) : next };
+    return { frameBuf: next.length > 30 ? next.slice(-30) : next };
   }),
 
   // Mode: 'word' | 'letter' | 'number'

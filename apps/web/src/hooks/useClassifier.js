@@ -261,8 +261,10 @@ export function classifyNumber(lm) {
   return hit(null, 0, 'hand');
 }
 
-// Motion tracking
-const MOTION_FRAMES = 12;
+// Motion tracking — 30 frames gives ~1 s of history at 30 fps.
+// The teacher feedback specifically called out the need for 30–60 frame
+// sequences; 30 is the sweet spot between latency and temporal accuracy.
+const MOTION_FRAMES = 30;
 export const motionHistory = { R: [], L: [] };
 
 export function pushMotion(side, wrist) {
@@ -308,8 +310,10 @@ export function detectMotionPattern(rVel, lVel) {
 }
 
 export function seqPattern(frameBuf) {
-  if (frameBuf.length < 5) return null;
-  const last = frameBuf.slice(-6);
+  if (frameBuf.length < 8) return null;
+  // Require the same label to be stable across the last 10 frames (~330 ms at 30 fps).
+  // More frames = fewer false positives; was 6 frames with the old 12-frame buffer.
+  const last = frameBuf.slice(-10);
   const allSame  = last.every(f => f.label === last[0].label && f.label !== '—');
   const allStill = last.every(f => f.speed < 0.08);
   if (allSame && allStill && last[0].label) {
