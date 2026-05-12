@@ -3,7 +3,7 @@ import useStore from '../store/useStore.js';
 import {
   pushMotion, getVelocity, detectMotionPattern, seqPattern,
   classifyTwoHand, classifySingleHand, classifyLetter, classifyNumber,
-  getCurlRatios, handSpread, getZone, dist,
+  getCurlRatios, handSpread, getZone, dist, normalizeLandmarks,
 } from './useClassifier.js';
 
 const HOLD_TARGET = 22;
@@ -139,12 +139,15 @@ export function useMediaPipe(videoRef, canvasRef) {
 
     // ── Debug features ────────────────────────────────────────────────────────
     if (primaryHand && store.settings.debug) {
-      const curls = getCurlRatios(primaryHand);
+      const normHand = normalizeLandmarks(primaryHand);
+      const curls  = getCurlRatios(normHand);
+      const spread = handSpread(normHand);
       store.setFeatures({
         rVel:   `${rVel.speed} ${rVel.dir}`,
         lVel:   `${lVel.speed} ${lVel.dir}`,
+        accel:  `R:${rVel.accel > 0 ? '+' : ''}${rVel.accel}`,
         zone:   getZone(primaryHand[0], null, null),
-        spread: handSpread(primaryHand).toFixed(2),
+        spread: spread.toFixed(2),
         ihd:    rLM && lLM ? dist(rLM[0], lLM[0]).toFixed(3) : '—',
         palm:   primaryGesture?.categoryName || '—',
         curl:   curls.map(c => c.toFixed(1)).join(' '),

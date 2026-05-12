@@ -275,20 +275,46 @@ export function pushMotion(side, wrist) {
 
 export function getVelocity(side) {
   const hist = motionHistory[side];
-  if (hist.length < 3) return { vx: 0, vy: 0, speed: '0.000', dir: '—' };
-  const old = hist[0];
-  const now = hist[hist.length - 1];
-  const dt  = (now.t - old.t) / 1000 || 0.01;
-  const vx  = (now.x - old.x) / dt;
-  const vy  = (now.y - old.y) / dt;
+  if (hist.length < 3) return { vx: 0, vy: 0, speed: '0.000', dir: '—', accel: 0 };
+
+  // ── Smoothed velocity: weighted average of recent per-frame deltas ──────────
+  // Earlier frames use half the weight of recent frames — this preserves
+  // responsiveness while suppressing single-frame noise spikes.
+  let wxSum = 0, wySum = 0, wSum = 0;
+  for (let i = 1; i < hist.length; i++) {
+    const dt = (hist[i].t - hist[i - 1].t) / 1000 || 0.001;
+    const fx = (hist[i].x - hist[i - 1].x) / dt;
+    const fy = (hist[i].y - hist[i - 1].y) / dt;
+    const w  = i / hist.length; // newer frames get higher weight
+    wxSum += fx * w;
+    wySum += fy * w;
+    wSum  += w;
+  }
+  const vx = wxSum / wSum;
+  const vy = wySum / wSum;
   const speed = Math.sqrt(vx * vx + vy * vy);
+
+  // ── Acceleration: compare recent half vs older half of buffer ────────────────
+  // Positive = speeding up (e.g. start of a chop); negative = slowing down.
+  const mid      = Math.floor(hist.length / 2);
+  const oldHalf  = hist.slice(0, mid);
+  const newHalf  = hist.slice(mid);
+  function halfSpeed(frames) {
+    if (frames.length < 2) return 0;
+    const dt = (frames[frames.length - 1].t - frames[0].t) / 1000 || 0.001;
+    const dx = frames[frames.length - 1].x - frames[0].x;
+    const dy = frames[frames.length - 1].y - frames[0].y;
+    return Math.sqrt((dx / dt) ** 2 + (dy / dt) ** 2);
+  }
+  const accel = halfSpeed(newHalf) - halfSpeed(oldHalf);
+
   let dir = '•';
   if (speed > 0.05) {
     const angle = Math.atan2(vy, vx) * 180 / Math.PI;
     const dirs  = ['→','↘','↓','↙','←','↖','↑','↗'];
     dir = dirs[Math.round((angle + 180) / 45) % 8];
   }
-  return { vx, vy, speed: speed.toFixed(3), dir };
+  return { vx, vy, speed: speed.toFixed(3), dir, accel: parseFloat(accel.toFixed(3)) };
 }
 
 export function detectMotionPattern(rVel, lVel) {
@@ -304,7 +330,10 @@ export function detectMotionPattern(rVel, lVel) {
   // atan2 uses math Y-up but screen Y increases downward.
   // Screen-DOWN motion  → vy > 0 → dir '↑'  (STOP chop)
   // Screen-UP motion    → vy < 0 → dir '↓'  (HELP lift)
-  if (rSpeed > FAST && ['↑','↖','↗'].includes(rVel.dir)) return 'STOP';
+  //
+  // Acceleration guard on STOP: require accel > 0 so we only fire on a
+  // deliberate downward chop (speed is *increasing*), not slow downward drift.
+  if (rSpeed > FAST && ['↑','↖','↗'].includes(rVel.dir) && rVel.accel > 0) return 'STOP';
   if (rSpeed > SLOW && rVel.dir === '↓') return 'HELP';
   return null;
 }
