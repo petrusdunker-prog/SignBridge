@@ -4,21 +4,40 @@ export function dist(a, b) {
   return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + ((a.z || 0) - (b.z || 0)) ** 2);
 }
 
+// ── Coordinate normalisation ──────────────────────────────────────────────────
+// Translates so the wrist (lm[0]) is the origin, then scales by the wrist→
+// middle-MCP distance (palm length ≈ 1 unit).  This makes every shape feature
+// invariant to hand size and camera distance — the single biggest accuracy fix.
+// Zone detection and inter-hand distances intentionally keep raw coords.
+export function normalizeLandmarks(lm) {
+  const wrist = lm[0];
+  const scale = dist(lm[0], lm[9]) || 0.001; // palm length; guard against zero
+  return lm.map(p => ({
+    x: (p.x - wrist.x) / scale,
+    y: (p.y - wrist.y) / scale,
+    z: ((p.z || 0) - (wrist.z || 0)) / scale,
+  }));
+}
+
+// curlRatio now expects *normalised* landmarks.
+// Thresholds recalibrated: palm length = 1 unit, so finger segments are
+// ~0.5–1.0 units long — much larger signal than the old raw 0.03 threshold.
 export function curlRatio(lm, finger) {
   const tips  = [0, 8, 12, 16, 20];
   const mids  = [0, 6, 10, 14, 18];
   const bases = [0, 5,  9, 13, 17];
   if (finger === 0) {
-    // Thumb: measure X spread between tip and IP joint
-    return Math.max(0, 1 - Math.abs(lm[4].x - lm[2].x) * 5);
+    // Thumb: X spread between tip and IP joint in normalised units.
+    // Extended thumb ≈ 0.5–0.8 → low curl; folded ≈ 0.1–0.2 → high curl.
+    return Math.max(0, 1 - Math.abs(lm[4].x - lm[2].x) * 1.5);
   }
   const tipY  = lm[tips[finger]].y;
   const midY  = lm[mids[finger]].y;
   const baseY = lm[bases[finger]].y;
   const range = Math.abs(baseY - midY);
-  // When range is tiny the finger is pointing toward/away from camera (foreshortened).
-  // Y-coords cluster together and are unreliable — treat as extended.
-  if (range < 0.03) return 0;
+  // Foreshortening guard: in normalised space a finger pointing toward the
+  // camera compresses the Y range to < 0.15 palm-lengths — treat as extended.
+  if (range < 0.15) return 0;
   return Math.max(0, Math.min(1, (tipY - midY) / range));
 }
 
@@ -35,13 +54,15 @@ export function palmOrientation(lm) {
   return dx > 0 ? 'right' : 'left';
 }
 
+// handSpread expects *normalised* landmarks.
+// Four adjacent fingertip pairs × ~0.45 palm-lengths each ≈ 1.8 for fully open.
 export function handSpread(lm) {
   const tips = [4, 8, 12, 16, 20];
   let total = 0;
   for (let i = 0; i < tips.length - 1; i++) {
     total += dist(lm[tips[i]], lm[tips[i + 1]]);
   }
-  return Math.min(1, total / 0.8);
+  return Math.min(1, total / 1.8);
 }
 
 export function getZone(wrist, faceLM, poseLM) {
@@ -86,21 +107,29 @@ function hit(label, conf, source) { return { label, conf, source }; }
 
 export function classifyTwoHand(rLM, lLM) {
   if (!rLM || !lLM) return null;
-  const interDist = dist(rLM[0], lLM[0]);
-  const rCurls = getCurlRatios(rLM);
-  const lCurls = getCurlRatios(lLM);
-  const rSpread = handSpread(rLM);
-  const lSpread = handSpread(lLM);
-  const rPinch  = dist(rLM[8], rLM[4]);
-  const lPinch  = dist(lLM[8], lLM[4]);
+
+  // Normalise each hand independently for shape features.
+  // Inter-wrist distance stays in raw frame coords — it's a position check,
+  // not a shape check, so it must NOT be normalised.
+  const rN = normalizeLandmarks(rLM);
+  const lN = normalizeLandmarks(lLM);
+  const interDist = dist(rLM[0], lLM[0]); // raw
+
+  const rCurls  = getCurlRatios(rN);
+  const lCurls  = getCurlRatios(lN);
+  const rSpread = handSpread(rN);
+  const lSpread = handSpread(lN);
+  // Pinch in normalised space: extended pair ≈ 1.5–2.5, touching ≈ 0.3–0.5
+  const rPinch  = dist(rN[8], rN[4]);
+  const lPinch  = dist(lN[8], lN[4]);
 
   // HURT: both hands with only index finger extended, pointing toward each other
   const rIndexOnly = rCurls[1] < 0.3 && rCurls[2] > 0.5 && rCurls[3] > 0.5 && rCurls[4] > 0.5;
   const lIndexOnly = lCurls[1] < 0.3 && lCurls[2] > 0.5 && lCurls[3] > 0.5 && lCurls[4] > 0.5;
   if (rIndexOnly && lIndexOnly && interDist < 0.40) return 'HURT';
 
-  // MORE: both hands fingertip pinch (O-hands touching)
-  if (rPinch < 0.08 && lPinch < 0.08 && interDist < 0.25) return 'MORE';
+  // MORE: both hands O-pinch (normalised threshold ≈ 0.45)
+  if (rPinch < 0.45 && lPinch < 0.45 && interDist < 0.25) return 'MORE';
 
   // ALL DONE / FINISHED: both hands fully open
   if (rSpread > 0.7 && lSpread > 0.7) return 'FINISHED';
@@ -112,42 +141,40 @@ export function classifyTwoHand(rLM, lLM) {
 
   if (rCurls[1] > 0.5 && lCurls[1] > 0.5 && interDist < 0.2) return 'FRIEND';
   if (rCurls[1] < 0.3 && lCurls[1] < 0.3 && rSpread < 0.5 && lSpread < 0.5) return 'HOW';
-  if (dist(rLM[9], lLM[0]) < 0.12) return 'NAME';
+  if (dist(rLM[9], lLM[0]) < 0.12) return 'NAME'; // raw — position check
   return null;
 }
 
 export function classifySingleHand(handLM, faceLM, poseLM) {
-  const curls  = getCurlRatios(handLM);
-  const spread = handSpread(handLM);
-  const zone   = getZone(handLM[0], faceLM, poseLM);
-  const pinch  = dist(handLM[8], handLM[4]);
+  // Normalise for all shape measurements (scale/distance invariant).
+  // Raw handLM kept only for zone detection (needs absolute screen position).
+  const n = normalizeLandmarks(handLM);
 
-  const thumbExt = curls[0] < 0.35; // X-spread based (best for horizontal/sideways thumb)
-  // thumbUp: thumb tip is ABOVE middle-finger MCP knuckle in screen Y.
-  // This reliably detects a raised thumb (A-hand, thumbs-up) even when
-  // the X-spread is small, which is the correct measurement for HELP / SORRY.
-  const thumbUp  = handLM[4].y < handLM[9].y;
+  const curls  = getCurlRatios(n);
+  const spread = handSpread(n);
+  const zone   = getZone(handLM[0], faceLM, poseLM); // raw — absolute Y position
+  // Pinch in normalised space: fingertips touching ≈ 0.3–0.5, extended ≈ 1.5+
+  const pinch  = dist(n[8], n[4]);
+
+  const thumbExt = curls[0] < 0.35;
+  // thumbUp: thumb tip is ABOVE middle-finger MCP in normalised Y.
+  // Still valid after normalisation — both points share the same origin/scale.
+  const thumbUp  = n[4].y < n[9].y;
 
   const indexExt  = curls[1] < 0.3;
   const middleExt = curls[2] < 0.3;
   const ringExt   = curls[3] < 0.3;
   const pinkyExt  = curls[4] < 0.3;
-  // allCurled: all four non-thumb fingers tightly curled
   const allCurled     = curls[1] > 0.5 && curls[2] > 0.5 && curls[3] > 0.5 && curls[4] > 0.5;
-  // allFingersExt: all four non-thumb fingers fully extended
   const allFingersExt = indexExt && middleExt && ringExt && pinkyExt;
 
   // ── Unique shapes checked first — can't be shadowed by zone logic ────────────
-  // I LOVE YOU: thumb + index + pinky (ILY hand)
   if (thumbExt && indexExt && !middleExt && !ringExt && pinkyExt)
     return hit('I LOVE YOU', 94, 'hand');
-  // PLAY: Y-hand — thumb UP + pinky, three middle fingers curled
   if (thumbUp && !indexExt && !middleExt && !ringExt && pinkyExt && allCurled)
     return hit('PLAY', 84, 'hand');
-  // HELP: A-hand — fist with thumb pointing UP, not at chest zone
   if (allCurled && thumbUp && zone !== 'chest')
     return hit('HELP', 84, 'hand');
-  // YES: S-hand — fist, thumb NOT pointing up, not at chest (would be TIRED/SORRY)
   if (allCurled && !thumbUp && zone !== 'chest')
     return hit('YES', 78, 'hand');
 
@@ -162,13 +189,11 @@ export function classifySingleHand(handLM, faceLM, poseLM) {
 
   // ── Chin zone ────────────────────────────────────────────────────────────────
   if (zone === 'chin') {
-    // THANK YOU: flat open hand at lips/chin — thumb can be up or horizontal
     if (allFingersExt && (thumbExt || thumbUp))                     return hit('THANK YOU',    92, 'body');
     if (allFingersExt && !thumbExt)                                 return hit('GOOD',         84, 'body');
     if (indexExt && middleExt && ringExt && !pinkyExt && !thumbExt) return hit('WATER',        88, 'body');
-    // EAT: bunched O-hand tapping mouth
-    if (pinch < 0.09)                                               return hit('EAT',          80, 'body');
-    // DRINK: C-hand (fingers bent, not fully curled, near chin)
+    // EAT: O-pinch at mouth — normalised threshold ≈ 0.45
+    if (pinch < 0.45)                                               return hit('EAT',          80, 'body');
     if (!indexExt && !middleExt && !ringExt && spread > 0.25)       return hit('DRINK',        76, 'body');
     if (allCurled && !thumbUp)                                      return hit('NOT',          80, 'body');
     if (!thumbExt && !indexExt && !middleExt && !ringExt && pinkyExt) return hit('THIRSTY',   78, 'body');
@@ -176,51 +201,41 @@ export function classifySingleHand(handLM, faceLM, poseLM) {
 
   // ── Cheek zone ───────────────────────────────────────────────────────────────
   if (zone === 'cheek') {
-    // CALL (phone): thumb + pinky extended (Y-hand / phone shape) at cheek
     if (thumbUp && !indexExt && !middleExt && !ringExt && pinkyExt) return hit('CALL (phone)', 88, 'body');
     if (indexExt && !middleExt && !ringExt && !pinkyExt && !thumbExt) return hit('DEAF',       84, 'body');
-    // SLEEP: fist at cheek, thumb NOT up (S-hand)
     if (allCurled && !thumbUp)                                      return hit('SLEEP',        78, 'body');
-    // TOMORROW: fist at cheek, thumb UP (A-hand)
     if (allCurled && thumbUp)                                       return hit('TOMORROW',     76, 'body');
     if (allFingersExt && !thumbExt && spread > 0.5)                 return hit('MOM',          82, 'body');
   }
 
   // ── Chest zone ───────────────────────────────────────────────────────────────
   if (zone === 'chest') {
-    // SORRY: A-hand (fist + thumb UP) making circles on chest
     if (allCurled && thumbUp)                                       return hit('SORRY',        88, 'body');
-    // PLEASE: flat open hand at chest (4+ fingers extended)
-    // Was broken before — allExt&&!thumbExt is impossible; now uses allFingersExt
     if (allFingersExt)                                              return hit('PLEASE',       86, 'body');
-    // TIRED: S-hand fist (thumb NOT up) at chest
     if (allCurled && !thumbUp)                                      return hit('TIRED',        76, 'body');
     if (indexExt && !middleExt && !ringExt && !pinkyExt)           return hit('ME / I',       84, 'body');
-    if (pinch < 0.1 && !indexExt)                                  return hit('HUNGRY',       78, 'body');
+    // HUNGRY: O-pinch at chest — normalised threshold ≈ 0.5
+    if (pinch < 0.5 && !indexExt)                                  return hit('HUNGRY',       78, 'body');
   }
 
   // ── Zone-independent shapes ───────────────────────────────────────────────────
-  // NO: index + middle extended (V / peace shape)
   if (indexExt && middleExt && !ringExt && !pinkyExt && !thumbExt) return hit('NO',           80, 'hand');
-  // WHO: thumb + index (L-shape approximation)
   if (thumbExt && indexExt && !middleExt && !ringExt && !pinkyExt) return hit('WHO',          74, 'hand');
-  // FINISHED / ALL DONE: fully open spread hand
   if (allFingersExt && (thumbExt || thumbUp) && spread > 0.65)     return hit('FINISHED',     76, 'hand');
-  // WATER: W-hand (index + middle + ring)
   if (indexExt && middleExt && ringExt && !pinkyExt && !thumbExt)  return hit('WATER',        72, 'hand');
-  // MORE (single-hand fallback): fingertip pinch
-  if (pinch < 0.07 && !indexExt && !middleExt)                     return hit('MORE',         78, 'hand');
-  // WHERE: single index pointing
+  // MORE single-hand: O-pinch, normalised ≈ 0.4
+  if (pinch < 0.40 && !indexExt && !middleExt)                     return hit('MORE',         78, 'hand');
   if (indexExt && !middleExt && !ringExt && !pinkyExt && !thumbExt) return hit('WHERE',       72, 'hand');
-  // RESTROOM: R-hand — index + middle extended but tips close together (crossed)
+  // RESTROOM: R-hand — crossed index+middle tips close in normalised space ≈ 0.25
   if (indexExt && middleExt && !ringExt && !pinkyExt
-      && dist(handLM[8], handLM[12]) < 0.06)                       return hit('RESTROOM',     70, 'hand');
+      && dist(n[8], n[12]) < 0.25)                                 return hit('RESTROOM',     70, 'hand');
 
   return hit(null, 0, 'hand');
 }
 
 export function classifyLetter(lm) {
-  const c = getCurlRatios(lm);
+  const n = normalizeLandmarks(lm);
+  const c = getCurlRatios(n);
   const th = c[0] < 0.35, i = c[1] < 0.3, m = c[2] < 0.3, r = c[3] < 0.3, p = c[4] < 0.3;
   if (!th && !i && !m && !r && !p) return hit('A', 82, 'hand');
   if (i && m && r && p && !th)     return hit('B', 88, 'hand');
@@ -234,7 +249,8 @@ export function classifyLetter(lm) {
 }
 
 export function classifyNumber(lm) {
-  const c = getCurlRatios(lm);
+  const n = normalizeLandmarks(lm);
+  const c = getCurlRatios(n);
   const th = c[0] < 0.35, i = c[1] < 0.3, m = c[2] < 0.3, r = c[3] < 0.3, p = c[4] < 0.3;
   if (i && !m && !r && !p && !th) return hit('1',  88, 'hand');
   if (i && m && !r && !p && !th)  return hit('2',  88, 'hand');
