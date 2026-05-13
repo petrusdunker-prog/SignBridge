@@ -9,12 +9,19 @@ const useStore = create((set, get) => ({
   mpLoading: false,
   setMpLoading: (v) => set({ mpLoading: v }),
 
-  // Detection
+  // Detection — raw, updated every frame (used for hold-to-add logic)
   currentSign: null,
   currentConf: 0,
   currentSource: 'hand',
   setDetection: (label, conf, source) => set({ currentSign: label, currentConf: conf, currentSource: source }),
   clearDetection: () => set({ currentSign: null, currentConf: 0, currentSource: 'hand' }),
+
+  // Display-stable sign — debounced (6 consecutive frames), shown in the live pill.
+  // Eliminates the A→S→A flicker without affecting hold-to-add response time.
+  displaySign:   null,
+  displayConf:   0,
+  displaySource: 'hand',
+  setDisplaySign: (sign, conf, source) => set({ displaySign: sign, displayConf: conf, displaySource: source }),
 
   // Stats
   fps: 0,
@@ -109,10 +116,12 @@ const useStore = create((set, get) => ({
   activeTab: 'camera',
   setActiveTab: (tab) => set({ activeTab: tab }),
 
-  // Normalised primary-hand landmarks for the current frame (set by useMediaPipe).
-  // Used by DatasetRecorder to capture training sequences without touching the loop.
-  rawLandmarks: null,
-  setRawLandmarks: (lm) => set({ rawLandmarks: lm }),
+  // Normalised landmarks — updated each frame by useMediaPipe.
+  // Used by DatasetRecorder; kept in store so recorder needs no hook into the loop.
+  rawLandmarks:  null, // primary / right hand (63 floats when normalised)
+  rawLandmarksL: null, // left hand (63 floats) — used for Auslan two-hand recording
+  setRawLandmarks:  (lm) => set({ rawLandmarks: lm }),
+  setRawLandmarksL: (lm) => set({ rawLandmarksL: lm }),
 
   // Face mesh loading state
   faceMeshLoading: false,

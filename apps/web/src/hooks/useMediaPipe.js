@@ -9,6 +9,10 @@ import { predict as lstmPredict, isLoaded as lstmLoaded } from './useLSTM.js';
 
 const HOLD_TARGET = 22;
 
+// Minimum consecutive frames a sign must appear before the display pill updates.
+// At 30 fps: 6 frames ≈ 200 ms — instant to the eye, kills A→S→A flicker.
+const DISPLAY_DEBOUNCE = 6;
+
 // ─── Tasks Vision gesture name → ASL sign ─────────────────────────────────────
 const GESTURE_MAP = {
   'Thumb_Up':    zone => zone === 'chest'    ? ['SORRY',     92] : ['HELP',      90],
@@ -60,6 +64,10 @@ export function useMediaPipe(videoRef, canvasRef) {
   // Rolling 30-frame buffer of flat 63-float landmark arrays — used by LSTM inference.
   // Kept in a ref (not store) to avoid 30 Zustand state updates per second.
   const landmarkBufRef = useRef([]);
+
+  // Display debounce — tracks how many consecutive frames show the same sign.
+  // Only pushes to store.displaySign after DISPLAY_DEBOUNCE consistent frames.
+  const signStreakRef = useRef({ label: null, count: 0 });
 
   const onFrame = useCallback(() => {
     const store = useStore.getState();
@@ -225,11 +233,30 @@ export function useMediaPipe(videoRef, canvasRef) {
         resetHold(store);
       }
 
+      // ── Display debounce ────────────────────────────────────────────────────
+      // Update the visible pill only after DISPLAY_DEBOUNCE consistent frames.
+      // currentSign (raw) still updates every frame for hold-to-add.
+      const det = result?.label || null;
+      if (det === signStreakRef.current.label) {
+        signStreakRef.current.count = Math.min(signStreakRef.current.count + 1, DISPLAY_DEBOUNCE + 1);
+      } else {
+        signStreakRef.current = { label: det, count: 1 };
+      }
+      if (signStreakRef.current.count >= DISPLAY_DEBOUNCE) {
+        store.setDisplaySign(det, result?.conf || 0, result?.source || 'hand');
+      } else if (!det) {
+        store.setDisplaySign(null, 0, 'hand');
+      }
+
+      // Landmarks for DatasetRecorder (right = primary, left = secondary)
       store.setRawLandmarks(primaryHand ? normalizeLandmarks(primaryHand) : null);
+      store.setRawLandmarksL(lLM ? normalizeLandmarks(lLM) : null);
     } else {
       store.pushBuf({ label: '—', dir: '•', speed: 0 });
       store.clearDetection();
+      store.setDisplaySign(null, 0, 'hand');
       store.setRawLandmarks(null);
+      store.setRawLandmarksL(null);
       resetHold(store);
     }
   }, [videoRef, canvasRef]);
@@ -312,8 +339,9 @@ export function useMediaPipe(videoRef, canvasRef) {
       canvas.height = video.videoHeight;
     }
 
-    landmarkBufRef.current = [];
-    lastVideoTime.current  = -1;
+    landmarkBufRef.current  = [];
+    signStreakRef.current   = { label: null, count: 0 };
+    lastVideoTime.current   = -1;
     store.setCamActive(true);
     animRef.current = requestAnimationFrame(onFrame);
   }, [videoRef, onFrame]);

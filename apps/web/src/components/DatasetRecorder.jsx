@@ -19,8 +19,10 @@ export default function DatasetRecorder() {
   const [phase,      setPhase]      = useState('idle'); // idle | countdown | recording | saved
   const [countdown,  setCountdown]  = useState(COUNTDOWN_SEC);
   const [progress,   setProgress]   = useState(0);
-  const [samples,    setSamples]    = useState([]); // [{label, frames, ts}]
+  const [samples,    setSamples]    = useState([]); // [{label, frames, ts, mode}]
   const [flash,      setFlash]      = useState(''); // brief status message
+  // 'asl' = 63-float single-hand | 'auslan' = 126-float two-hand (R 63 + L 63, zero-padded)
+  const [captureMode, setCaptureMode] = useState('asl');
 
   const frameBuffer  = useRef([]);
   const rafRef       = useRef(null);
@@ -36,6 +38,20 @@ export default function DatasetRecorder() {
     clearInterval(countdownRef.current);
   }, []);
 
+  // captureModeRef lets the rAF closure read the latest captureMode without a stale closure
+  const captureModeRef = useRef('asl');
+  useEffect(() => { captureModeRef.current = captureMode; }, [captureMode]);
+
+  // ── Flat-array helpers ────────────────────────────────────────────────────
+  function toFlat(lm) {
+    if (!lm) return new Array(63).fill(0);
+    return lm.flatMap(p => [
+      parseFloat(p.x.toFixed(4)),
+      parseFloat(p.y.toFixed(4)),
+      parseFloat((p.z || 0).toFixed(4)),
+    ]);
+  }
+
   // ── Capture loop (runs via rAF, reads store directly to avoid rerenders) ─
   function startCapture() {
     frameBuffer.current = [];
@@ -45,15 +61,25 @@ export default function DatasetRecorder() {
     function capture() {
       if (phaseRef.current !== 'recording') return;
 
-      const lm = useStore.getState().rawLandmarks;
-      if (lm) {
-        // Store as flat array [x0,y0,z0, x1,y1,z1, ...] — 63 values per frame.
-        // This is the format expected by numpy/TensorFlow without reshaping.
-        const flat = lm.flatMap(p => [
-          parseFloat(p.x.toFixed(4)),
-          parseFloat(p.y.toFixed(4)),
-          parseFloat((p.z || 0).toFixed(4)),
-        ]);
+      const state = useStore.getState();
+      const lmR   = state.rawLandmarks;   // primary / right (normalized)
+      const lmL   = state.rawLandmarksL;  // left (normalized)
+
+      // For ASL: need right hand. For Auslan: accept either hand present.
+      const hasData = captureModeRef.current === 'auslan'
+        ? (lmR || lmL)
+        : lmR;
+
+      if (hasData) {
+        let flat;
+        if (captureModeRef.current === 'auslan') {
+          // 126 floats: right-hand 63 + left-hand 63 (zero-padded if absent)
+          flat = [...toFlat(lmR), ...toFlat(lmL)];
+        } else {
+          // 63 floats: right / primary hand only
+          flat = toFlat(lmR);
+        }
+
         frameBuffer.current.push(flat);
         setProgress(frameBuffer.current.length);
 
@@ -68,14 +94,16 @@ export default function DatasetRecorder() {
   }
 
   function commitSample() {
+    const mode   = captureModeRef.current;
     const sample = {
-      label: label.trim().toUpperCase(),
-      frames: [...frameBuffer.current], // 30 × 63 flat arrays
+      label:  label.trim().toUpperCase(),
+      frames: [...frameBuffer.current], // 30 × 63 (ASL) or 30 × 126 (Auslan)
+      mode,   // 'asl' | 'auslan'
       ts: Date.now(),
     };
     setSamples(prev => [...prev, sample]);
     setPhase('saved');
-    setFlash(`✓ Saved "${sample.label}" (${TARGET_FRAMES} frames)`);
+    setFlash(`✓ Saved "${sample.label}" (${TARGET_FRAMES} frames, ${mode.toUpperCase()})`);
     setTimeout(() => { setPhase('idle'); setProgress(0); setFlash(''); }, 1400);
   }
 
@@ -109,13 +137,20 @@ export default function DatasetRecorder() {
 
   // ── Export ────────────────────────────────────────────────────────────────
   function handleExport() {
+    // Determine dominant mode (most common in current batch)
+    const modeCounts = samples.reduce((a, s) => { a[s.mode] = (a[s.mode] || 0) + 1; return a; }, {});
+    const dominantMode = Object.entries(modeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'asl';
+    const featureCount = dominantMode === 'auslan' ? 126 : 63;
+
     const json = JSON.stringify({
       meta: {
-        format:      'signbridge-dataset-v1',
+        format:      'signbridge-dataset-v2',
         frames:      TARGET_FRAMES,
-        features:    63, // 21 landmarks × 3 (x,y,z), normalised wrist-origin
-        description: 'Each frame is a flat array of 63 floats: [x0,y0,z0, x1,y1,z1, ...]. ' +
-                     'Coordinates are normalised: wrist at origin, scale = wrist-to-middle-MCP distance.',
+        features:    featureCount,
+        modes:       modeCounts,
+        description: dominantMode === 'auslan'
+          ? 'Each frame is a flat array of 126 floats: right-hand [x0,y0,z0…] followed by left-hand [x0,y0,z0…]. Zero-padded when a hand is absent.'
+          : 'Each frame is a flat array of 63 floats: [x0,y0,z0, x1,y1,z1, ...]. Coordinates are normalised: wrist at origin, scale = wrist-to-middle-MCP distance.',
         exported:    new Date().toISOString(),
         count:       samples.length,
       },
@@ -136,6 +171,7 @@ export default function DatasetRecorder() {
   }, {});
   const labelList = Object.entries(counts).sort((a, b) => b[1] - a[1]);
 
+  // Auslan requires at least one hand; ASL requires the right/primary hand
   const canRecord = camActive && handCount > 0 && phase === 'idle';
 
   return (
@@ -161,6 +197,27 @@ export default function DatasetRecorder() {
             {phase === 'countdown'           && `Get ready… ${countdown}`}
             {phase === 'recording'           && `Recording… ${progress}/${TARGET_FRAMES}`}
             {phase === 'saved'               && flash}
+          </div>
+
+          {/* ASL / Auslan mode toggle */}
+          <div style={modeRow}>
+            <span style={inputLabel}>Capture mode</span>
+            <div style={modeToggleWrap}>
+              {[
+                { id: 'asl',    label: 'ASL (63 floats)',    desc: 'One hand' },
+                { id: 'auslan', label: 'Auslan (126 floats)', desc: 'Both hands' },
+              ].map(({ id, label: ml, desc }) => (
+                <button
+                  key={id}
+                  disabled={phase !== 'idle'}
+                  onClick={() => setCaptureMode(id)}
+                  style={{ ...modeBtn, ...(captureMode === id ? modeBtnActive : {}) }}
+                  title={desc}
+                >
+                  {ml}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Label input */}
@@ -244,8 +301,9 @@ export default function DatasetRecorder() {
 
           {/* Export format note */}
           <p style={note}>
-            Each sample: 30 frames × 63 floats (21 landmarks × xyz, wrist-normalised).
-            Load with <code>json.load()</code> → <code>np.array(s["frames"])</code> in Python.
+            <strong>ASL:</strong> 30 × 63 floats (one hand, wrist-normalised).{' '}
+            <strong>Auslan:</strong> 30 × 126 floats (R + L, zero-padded).{' '}
+            Load with <code>json.load()</code> → <code>np.array(s["frames"])</code>.
           </p>
         </>
       )}
@@ -340,3 +398,15 @@ const note = {
   fontSize: '.62rem', color: 'var(--light)', lineHeight: 1.55,
   marginTop: '.6rem', marginBottom: 0,
 };
+const modeRow = {
+  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+  marginBottom: '.65rem', gap: '.5rem',
+};
+const modeToggleWrap = { display: 'flex', gap: '.3rem' };
+const modeBtn = {
+  padding: '.22rem .6rem', borderRadius: 100,
+  border: '1px solid var(--border)', background: 'transparent',
+  fontSize: '.65rem', fontWeight: 600, color: 'var(--muted)',
+  cursor: 'pointer', transition: 'all .12s',
+};
+const modeBtnActive = { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' };

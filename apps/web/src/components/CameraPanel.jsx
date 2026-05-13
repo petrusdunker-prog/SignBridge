@@ -10,18 +10,21 @@ export default function CameraPanel() {
   const { start, stop } = useMediaPipe(videoRef, canvasRef);
 
   const {
-    camActive, mpLoading, currentSign, currentConf, currentSource,
-    handCount, hasFace, hasPose, fps, holdFrames, settings,
+    camActive, mpLoading,
+    currentSign, currentSource,          // raw — used for hold ring
+    displaySign, displayConf, displaySource, // debounced — shown in pill
+    handCount, hasFace, fps, holdFrames, settings,
   } = useStore();
 
   const CIRCUMFERENCE = 94.25;
   const holdProgress = holdFrames / HOLD_TARGET;
   const dashOffset   = CIRCUMFERENCE * (1 - Math.min(holdProgress, 1));
 
-  const pillClass = currentSign
-    ? currentSource === 'ai'       ? 'live-pill ai-det'
-    : currentSource === 'body'     ? 'live-pill body-det'
-    : currentSource === 'two-hand' ? 'live-pill two-hand'
+  const pillClass = displaySign
+    ? displaySource === 'lstm'     ? 'live-pill lstm-det'
+    : displaySource === 'ai'       ? 'live-pill ai-det'
+    : displaySource === 'body'     ? 'live-pill body-det'
+    : displaySource === 'two-hand' ? 'live-pill two-hand'
     : 'live-pill detected'
     : 'live-pill';
 
@@ -46,8 +49,11 @@ export default function CameraPanel() {
         {/* Body indicators */}
         <div style={{ position:'absolute',top:10,left:10,display:'flex',flexDirection:'column',gap:4,zIndex:20 }}>
           <div className={`bi hand${handCount ? ' active' : ''}`}>✋ {handCount}</div>
+          <div className={`bi face${hasFace ? ' active' : ''}`}>👤 {hasFace ? 'face' : '—'}</div>
           <div className={`bi ai${currentSource === 'ai' && currentSign ? ' active' : ''}`}>
-            🤖 {currentSource === 'ai' && currentSign ? 'ML' : currentSign ? 'GEO' : '—'}
+            🤖 {currentSource === 'lstm' && currentSign ? 'LSTM'
+               : currentSource === 'ai'  && currentSign ? 'ML'
+               : currentSign ? 'GEO' : '—'}
           </div>
         </div>
 
@@ -75,17 +81,20 @@ export default function CameraPanel() {
           </div>
         )}
 
-        {/* Live pill */}
+        {/* Live pill — uses debounced displaySign to prevent flicker */}
         <div className={pillClass}>
-          <span style={{ fontFamily:"'Fraunces',serif", fontSize:'1rem', color: currentSign ? '#fff' : 'var(--accent-mid)', flexShrink:0 }}>
-            {currentSign ? '✓' : '—'}
+          <span style={{ fontFamily:"'Fraunces',serif", fontSize:'1rem', color: displaySign ? '#fff' : 'var(--accent-mid)', flexShrink:0 }}>
+            {displaySign ? '✓' : '—'}
           </span>
           <span style={{ overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-            {currentSign || 'Detecting...'}
+            {displaySign || 'Detecting...'}
           </span>
+          {displaySign && displayConf > 0 && (
+            <span style={confBadge}>{displayConf}%</span>
+          )}
         </div>
 
-        {/* Hold ring */}
+        {/* Hold ring — uses raw currentSign so it responds every frame */}
         {settings.holdAdd && currentSign && holdFrames > 0 && (
           <div style={{ position:'absolute',top:10,right:10,zIndex:20 }}>
             <svg width="34" height="34" viewBox="0 0 36 36">
@@ -139,6 +148,7 @@ export default function CameraPanel() {
         .live-pill.body-det{background:rgba(59,130,246,.85)}
         .live-pill.two-hand{background:rgba(124,58,237,.85)}
         .live-pill.ai-det{background:rgba(217,119,6,.9)}
+        .live-pill.lstm-det{background:rgba(124,58,237,.92)}
         .hbg{fill:none;stroke:rgba(255,255,255,.15);stroke-width:3}
         .harc{fill:none;stroke:var(--accent-mid);stroke-width:3;stroke-linecap:round;
               stroke-dasharray:94.25;stroke-dashoffset:94.25;
@@ -184,4 +194,10 @@ const statVal = {
 const statLbl = {
   fontSize:'.56rem', color:'var(--light)', textTransform:'uppercase',
   letterSpacing:'.07em', marginTop:'.1rem',
+};
+const confBadge = {
+  fontSize:'.65rem', fontWeight:700,
+  background:'rgba(255,255,255,.25)',
+  padding:'.1rem .35rem', borderRadius:100,
+  letterSpacing:'.02em',
 };
