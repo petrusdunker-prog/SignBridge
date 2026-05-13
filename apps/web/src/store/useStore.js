@@ -95,7 +95,7 @@ const useStore = create((set, get) => ({
     twoHand: true,
     tts: true,           // auto-speak AI output
     autoInterpret: true, // auto-interpret after pause in signing
-    faceMesh: false,     // load MediaPipe FaceLandmarker for accurate zone detection (~32 MB)
+    faceMesh: true,      // load MediaPipe FaceLandmarker for accurate zone detection (~32 MB)
   },
   toggleSetting: (key) => set((s) => ({
     settings: { ...s.settings, [key]: !s.settings[key] },

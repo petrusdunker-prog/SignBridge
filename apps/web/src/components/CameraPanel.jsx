@@ -67,7 +67,7 @@ export default function CameraPanel() {
                   Loading gesture recognition model…
                 </p>
                 <p style={{ fontSize: '.72rem', color: 'rgba(255,255,255,.35)', textAlign: 'center', maxWidth: 200 }}>
-                  First load: ~42 MB one-time download. Cached after that.
+                  First load: ~74 MB (gesture + face mesh). Cached after that.
                 </p>
               </>
             ) : (

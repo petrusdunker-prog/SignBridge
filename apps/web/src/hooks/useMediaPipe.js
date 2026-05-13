@@ -10,8 +10,8 @@ import { predict as lstmPredict, isLoaded as lstmLoaded } from './useLSTM.js';
 const HOLD_TARGET = 22;
 
 // Minimum consecutive frames a sign must appear before the display pill updates.
-// At 30 fps: 6 frames ≈ 200 ms — instant to the eye, kills A→S→A flicker.
-const DISPLAY_DEBOUNCE = 6;
+// At 30 fps: 8 frames ≈ 267 ms — still feels instant, better noise suppression.
+const DISPLAY_DEBOUNCE = 8;
 
 // ─── Tasks Vision gesture name → ASL sign ─────────────────────────────────────
 const GESTURE_MAP = {
@@ -190,7 +190,7 @@ export function useMediaPipe(videoRef, canvasRef) {
       }
 
       // 2. Tasks Vision ML gesture recognizer
-      if (!result && primaryGesture?.categoryName !== 'None' && (primaryGesture?.score ?? 0) > 0.70) {
+      if (!result && primaryGesture?.categoryName !== 'None' && (primaryGesture?.score ?? 0) > 0.75) {
         const mapper = GESTURE_MAP[primaryGesture.categoryName];
         if (mapper) {
           // Use real face landmarks for zone if available, else Y-heuristic
@@ -301,7 +301,8 @@ export function useMediaPipe(videoRef, canvasRef) {
           minTrackingConfidence:      0.5,
         });
 
-        // Load FaceLandmarker only if the user has enabled it in settings (~32 MB)
+        // Load FaceLandmarker only if the user has enabled it in settings (~32 MB).
+        // Non-fatal: if it fails, zone detection falls back to the Y-position heuristic.
         if (store.settings.faceMesh && !faceRef.current) {
           store.setFaceMeshLoading(true);
           try {
@@ -315,6 +316,8 @@ export function useMediaPipe(videoRef, canvasRef) {
               outputFaceBlendshapes: false,
               outputFacialTransformationMatrixes: false,
             });
+          } catch {
+            faceRef.current = null; // graceful degradation to Y-heuristic
           } finally {
             store.setFaceMeshLoading(false);
           }

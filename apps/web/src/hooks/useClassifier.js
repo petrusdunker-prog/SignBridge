@@ -173,9 +173,12 @@ export function classifySingleHand(handLM, faceLM, poseLM) {
     return hit('I LOVE YOU', 94, 'hand');
   if (thumbUp && !indexExt && !middleExt && !ringExt && pinkyExt && allCurled)
     return hit('PLAY', 84, 'hand');
-  if (allCurled && thumbUp && zone !== 'chest')
+  // HELP: closed fist with thumb up raised to forehead (ASL: lift open palm to shoulder/forehead).
+  // Restricting to forehead zone prevents every thumbs-up at face height from firing.
+  if (allCurled && thumbUp && zone === 'forehead')
     return hit('HELP', 84, 'hand');
-  if (allCurled && !thumbUp && zone !== 'chest')
+  // YES: fist nod — require chin zone so it doesn't collide with HELP or chest signs.
+  if (allCurled && !thumbUp && zone === 'chin')
     return hit('YES', 78, 'hand');
 
   // ── Forehead zone ────────────────────────────────────────────────────────────
@@ -223,9 +226,11 @@ export function classifySingleHand(handLM, faceLM, poseLM) {
   if (thumbExt && indexExt && !middleExt && !ringExt && !pinkyExt) return hit('WHO',          74, 'hand');
   if (allFingersExt && (thumbExt || thumbUp) && spread > 0.65)     return hit('FINISHED',     76, 'hand');
   if (indexExt && middleExt && ringExt && !pinkyExt && !thumbExt)  return hit('WATER',        72, 'hand');
-  // MORE single-hand: O-pinch, normalised ≈ 0.4
-  if (pinch < 0.40 && !indexExt && !middleExt)                     return hit('MORE',         78, 'hand');
-  if (indexExt && !middleExt && !ringExt && !pinkyExt && !thumbExt) return hit('WHERE',       72, 'hand');
+  // MORE single-hand: tight O-pinch only (tightened 0.40→0.35 to reduce false fires).
+  if (pinch < 0.35 && !indexExt && !middleExt)                     return hit('MORE',         78, 'hand');
+  // WHERE: index pointing — require neutral zone so mid-sign index extensions don't trigger it.
+  if (indexExt && !middleExt && !ringExt && !pinkyExt && !thumbExt
+      && zone === 'neutral')                                        return hit('WHERE',        72, 'hand');
   // RESTROOM: R-hand — crossed index+middle tips close in normalised space ≈ 0.25
   if (indexExt && middleExt && !ringExt && !pinkyExt
       && dist(n[8], n[12]) < 0.25)                                 return hit('RESTROOM',     70, 'hand');
@@ -334,7 +339,8 @@ export function detectMotionPattern(rVel, lVel) {
   // Acceleration guard on STOP: require accel > 0 so we only fire on a
   // deliberate downward chop (speed is *increasing*), not slow downward drift.
   if (rSpeed > FAST && ['↑','↖','↗'].includes(rVel.dir) && rVel.accel > 0) return 'STOP';
-  if (rSpeed > SLOW && rVel.dir === '↓') return 'HELP';
+  // HELP motion: require a deliberate upward lift, not just slow drift (raised SLOW→0.12).
+  if (rSpeed > 0.12 && rVel.dir === '↓') return 'HELP';
   return null;
 }
 
