@@ -43,16 +43,16 @@ export async function loadModel(modelJsonFile, weightsFiles, labelsJsonFile) {
 }
 
 // ── Predict ──────────────────────────────────────────────────────────────────
-// landmarkBuf: array of up to 30 flat 63-float arrays (newest last).
+// flatBuf: Float32Array of exactly 30 * 63 = 1890 values (oldest frame first).
+// Provided by useMediaPipe's ring buffer — no per-call allocation needed.
 // Returns { label, conf, source: 'lstm' } or null if confidence < threshold.
-export function predict(landmarkBuf) {
+export function predict(flatBuf) {
   if (!_tf || !_model || !_labels) return null;
-  if (landmarkBuf.length < 30) return null;
-
-  const frames = landmarkBuf.slice(-30); // exactly 30 frames
+  if (flatBuf.length < 1890) return null;
 
   return _tf.tidy(() => {
-    const input = _tf.tensor3d([frames], [1, 30, 63]);
+    // TypedArray → tensor directly: no intermediate JS array created.
+    const input  = _tf.tensor(flatBuf, [1, 30, 63]);
     const output = _model.predict(input);
     const probs  = Array.from(output.dataSync());
     const maxIdx = probs.indexOf(Math.max(...probs));

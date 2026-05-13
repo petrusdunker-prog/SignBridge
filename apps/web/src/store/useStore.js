@@ -45,9 +45,9 @@ const useStore = create((set, get) => ({
   mode: 'word',
   setMode: (mode) => set({ mode }),
 
-  // Sentence stream
+  // Sentence stream — each entry is { sign: string, conf: number }
   sentence: [],
-  addSign: (sign) => set((s) => ({ sentence: [...s.sentence, sign] })),
+  addSign: (entry) => set((s) => ({ sentence: [...s.sentence, entry] })),
   undoSign: () => set((s) => ({ sentence: s.sentence.slice(0, -1) })),
   clearSentence: () => set({ sentence: [], aiText: null }),
 
@@ -62,10 +62,11 @@ const useStore = create((set, get) => ({
   saveToHistory: () => {
     const { sentence, aiText, history, conversation } = get();
     if (!sentence.length) return;
-    const text = aiText || sentence.join(' ');
+    const raw  = sentence.map(e => e.sign).join(' ');
+    const text = aiText || raw;
     set({
-      history: [{ raw: sentence.join(' '), ai: aiText, time: new Date(), count: sentence.length }, ...history],
-      conversation: [...conversation, { type: 'sign', text, raw: sentence.join(' '), time: new Date() }],
+      history: [{ raw, ai: aiText, time: new Date(), count: sentence.length }, ...history],
+      conversation: [...conversation, { type: 'sign', text, raw, time: new Date() }],
       sentence: [],
       aiText: null,
     });
@@ -137,6 +138,31 @@ const useStore = create((set, get) => ({
   lastDet: null,
   setHoldFrames: (n) => set({ holdFrames: n }),
   setLastDet: (s) => set({ lastDet: s }),
+
+  // Batched per-frame update — replaces ~8 individual set() calls with one.
+  // All fields are required so no subscriber fires twice for the same frame.
+  setFrameState: (p) => set((s) => {
+    const next = [...s.frameBuf, p.bufEntry];
+    return {
+      fps:           p.fps,
+      handCount:     p.handCount,
+      hasFace:       p.hasFace,
+      hasPose:       false,
+      features:      p.features,
+      currentSign:   p.currentSign,
+      currentConf:   p.currentConf,
+      currentSource: p.currentSource,
+      displaySign:   p.displaySign,
+      displayConf:   p.displayConf,
+      displaySource: p.displaySource,
+      rawLandmarks:  p.rawLandmarks,
+      rawLandmarksL: p.rawLandmarksL,
+      holdFrames:    p.holdFrames,
+      lastDet:       p.lastDet,
+      frameBuf: next.length > 30 ? next.slice(-30) : next,
+      ...(p.addSign ? { sentence: [...s.sentence, p.addSign] } : {}),
+    };
+  }),
 }));
 
 export default useStore;

@@ -350,7 +350,7 @@ export function detectMotionPattern(rVel, lVel) {
   return null;
 }
 
-export function seqPattern(frameBuf) {
+export function seqPattern(frameBuf, currentConf = 80) {
   if (frameBuf.length < 8) return null;
   // Require the same label to be stable across the last 10 frames (~330 ms at 30 fps).
   // More frames = fewer false positives; was 6 frames with the old 12-frame buffer.
@@ -359,7 +359,8 @@ export function seqPattern(frameBuf) {
   // Allow 1 micro-tremor frame: require 8/10 frames below the speed threshold.
   const stillCount = last.filter(f => f.speed < 0.08).length;
   if (allSame && stillCount >= 8 && last[0].label) {
-    return { label: last[0].label, conf: 96, source: 'seq' };
+    // Stability adds a small confidence bump but never invents certainty.
+    return { label: last[0].label, conf: Math.min(currentConf + 8, 91), source: 'seq' };
   }
   return null;
 }

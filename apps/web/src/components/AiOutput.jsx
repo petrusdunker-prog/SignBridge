@@ -41,7 +41,7 @@ export default function AiOutput() {
       const res  = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ signs: sentence, rephrase: aiText }),
+        body: JSON.stringify({ signs: sentence.map(e => ({ sign: e.sign, conf: e.conf })), rephrase: aiText }),
       });
       const data = await res.json();
       setAiText(data.interpretation || aiText);

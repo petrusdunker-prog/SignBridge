@@ -14,6 +14,10 @@ const HOLD_TARGET = 22;
 // At 30 fps: 8 frames ≈ 267 ms — still feels instant, better noise suppression.
 const DISPLAY_DEBOUNCE = 8;
 
+// Sliding-window step for LSTM: run inference every N frames once buffer is full.
+// At 30 fps, step=5 → ~6 predictions/sec instead of waiting for 30 new frames.
+const LSTM_STEP = 5;
+
 // ─── Tasks Vision gesture name → ASL sign ─────────────────────────────────────
 const GESTURE_MAP = {
   'Thumb_Up':    zone => zone === 'chest'    ? ['SORRY',     92] : ['HELP',      90],
@@ -62,9 +66,16 @@ export function useMediaPipe(videoRef, canvasRef) {
   const lastFps    = useRef(Date.now());
   const lastVideoTime = useRef(-1);
 
-  // Rolling 30-frame buffer of flat 63-float landmark arrays — used by LSTM inference.
-  // Kept in a ref (not store) to avoid 30 Zustand state updates per second.
-  const landmarkBufRef = useRef([]);
+  // Ring buffer for LSTM landmarks — pre-allocated, zero allocation per frame.
+  // 30 slots × 63 floats = 1890 elements total.
+  const ringBufRef   = useRef(new Float32Array(30 * 63)); // circular storage
+  const ringOutRef   = useRef(new Float32Array(30 * 63)); // reusable read buffer
+  const ringHeadRef  = useRef(0);  // next-write slot (0–29)
+  const ringCountRef = useRef(0);  // frames written so far, capped at 30
+
+  // Sliding-window counter: run LSTM every LSTM_STEP frames once the buffer is full.
+  // At 30 fps with step=5: prediction fires ~6× per second instead of once per second.
+  const lstmFrameRef = useRef(0);
 
   // Display debounce — tracks how many consecutive frames show the same sign.
   // Only pushes to store.displaySign after DISPLAY_DEBOUNCE consistent frames.
@@ -116,8 +127,6 @@ export function useMediaPipe(videoRef, canvasRef) {
     const allSides = gr.handednesses || [];
     const handCount = allLM.length;
 
-    store.setStats(fps, handCount, !!faceLM, false);
-
     if (store.settings.skeleton) {
       allLM.forEach((lm, i) => {
         const side = allSides[i]?.[0]?.categoryName;
@@ -141,26 +150,32 @@ export function useMediaPipe(videoRef, canvasRef) {
     const rVel = getVelocity('R');
     const lVel = getVelocity('L');
 
-    // ── Landmark buffer for LSTM (30-frame rolling window) ────────────────────
-    if (primaryHand) {
-      const norm = normalizeLandmarks(primaryHand);
-      const flat = norm.flatMap(p => [
-        parseFloat(p.x.toFixed(4)),
-        parseFloat(p.y.toFixed(4)),
-        parseFloat((p.z || 0).toFixed(4)),
-      ]);
-      landmarkBufRef.current = [...landmarkBufRef.current, flat].slice(-30);
-    } else {
-      // Zero-vector for frames with no hand — keeps buffer length consistent
-      landmarkBufRef.current = [...landmarkBufRef.current, new Array(63).fill(0)].slice(-30);
+    // ── Landmark ring buffer for LSTM — zero allocation per frame ────────────
+    {
+      const head = ringHeadRef.current;
+      const base = head * 63;
+      if (primaryHand) {
+        const norm = normalizeLandmarks(primaryHand);
+        let fi = base;
+        for (const p of norm) {
+          ringBufRef.current[fi++] = Math.round(p.x       * 1e4) / 1e4;
+          ringBufRef.current[fi++] = Math.round(p.y       * 1e4) / 1e4;
+          ringBufRef.current[fi++] = Math.round((p.z || 0) * 1e4) / 1e4;
+        }
+      } else {
+        ringBufRef.current.fill(0, base, base + 63);
+      }
+      ringHeadRef.current  = (head + 1) % 30;
+      ringCountRef.current = Math.min(ringCountRef.current + 1, 30);
     }
 
-    // ── Debug features ────────────────────────────────────────────────────────
+    // ── Debug features (local — flushed via setFrameState below) ────────────
+    let features = null;
     if (primaryHand && store.settings.debug) {
       const normHand = normalizeLandmarks(primaryHand);
       const curls  = getCurlRatios(normHand);
       const spread = handSpread(normHand);
-      store.setFeatures({
+      features = {
         rVel:   `${rVel.speed} ${rVel.dir}`,
         lVel:   `${lVel.speed} ${lVel.dir}`,
         accel:  `R:${rVel.accel > 0 ? '+' : ''}${rVel.accel}`,
@@ -170,18 +185,18 @@ export function useMediaPipe(videoRef, canvasRef) {
         palm:   primaryGesture?.categoryName || '—',
         curl:   curls.map(c => c.toFixed(1)).join(' '),
         face:   faceLM ? 'yes' : 'no',
-      });
-    } else {
-      store.setFeatures(null);
+      };
     }
 
     // ── Classification pipeline ───────────────────────────────────────────────
     let result = null;
 
     if (handCount > 0) {
-      // 0. LSTM — highest priority when a trained model is loaded
-      if (lstmLoaded() && landmarkBufRef.current.length >= 30) {
-        result = lstmPredict(landmarkBufRef.current);
+      // 0. LSTM — sliding window: predict every LSTM_STEP frames once buffer is full.
+      // This cuts perceived latency from ~1 s (wait 30 new frames) to ~167 ms (step=5).
+      lstmFrameRef.current = (lstmFrameRef.current + 1) % LSTM_STEP;
+      if (lstmLoaded() && ringCountRef.current >= 30 && lstmFrameRef.current === 0) {
+        result = lstmPredict(readRing());
       }
 
       // 1. Motion patterns — STOP, HELP, MORE, FINISHED
@@ -220,57 +235,75 @@ export function useMediaPipe(videoRef, canvasRef) {
           : classifyNumber(primaryHand);
       }
 
-      // Sequence confirmation
+      // ── Sequence confirmation ───────────────────────────────────────────────
       const buf = { label: result?.label || '—', dir: rVel.dir, speed: parseFloat(rVel.speed) };
-      store.pushBuf(buf);
-      const seq = seqPattern([...store.frameBuf, buf]);
+      const seq = seqPattern([...store.frameBuf, buf], result?.conf ?? 80);
       if (seq?.label) result = seq;
 
-      if (result?.label) {
-        store.setDetection(result.label, result.conf, result.source);
-        handleHold(result.label, store);
-      } else {
-        store.clearDetection();
-        resetHold(store);
-      }
-
       // ── Display debounce ────────────────────────────────────────────────────
-      // Update the visible pill only after DISPLAY_DEBOUNCE consistent frames.
-      // currentSign (raw) still updates every frame for hold-to-add.
       const det = result?.label || null;
       if (det === signStreakRef.current.label) {
         signStreakRef.current.count = Math.min(signStreakRef.current.count + 1, DISPLAY_DEBOUNCE + 1);
       } else {
         signStreakRef.current = { label: det, count: 1 };
       }
-      if (signStreakRef.current.count >= DISPLAY_DEBOUNCE) {
-        store.setDisplaySign(det, result?.conf || 0, result?.source || 'hand');
-      } else if (!det) {
-        store.setDisplaySign(null, 0, 'hand');
-      }
+      const streakReady = signStreakRef.current.count >= DISPLAY_DEBOUNCE;
 
-      // Landmarks for DatasetRecorder (right = primary, left = secondary)
-      store.setRawLandmarks(primaryHand ? normalizeLandmarks(primaryHand) : null);
-      store.setRawLandmarksL(lLM ? normalizeLandmarks(lLM) : null);
+      // ── Hold computation (pure — returns new hold state without store calls) ─
+      const hold = computeHold(det, result?.conf || 0, store);
+
+      // ── Single batched store update for this frame ──────────────────────────
+      store.setFrameState({
+        fps, handCount, hasFace: !!faceLM, features,
+        currentSign:   det,
+        currentConf:   result?.conf   || 0,
+        currentSource: result?.source || 'hand',
+        displaySign:   streakReady ? det : (!det ? null : store.displaySign),
+        displayConf:   streakReady ? (result?.conf   || 0)      : (!det ? 0      : store.displayConf),
+        displaySource: streakReady ? (result?.source || 'hand') : (!det ? 'hand' : store.displaySource),
+        rawLandmarks:  primaryHand ? normalizeLandmarks(primaryHand) : null,
+        rawLandmarksL: lLM ? normalizeLandmarks(lLM) : null,
+        bufEntry: buf,
+        holdFrames: hold.holdFrames,
+        lastDet:    hold.lastDet,
+        addSign:    hold.addSign,
+      });
     } else {
-      store.pushBuf({ label: '—', dir: '•', speed: 0 });
-      store.clearDetection();
-      store.setDisplaySign(null, 0, 'hand');
-      store.setRawLandmarks(null);
-      store.setRawLandmarksL(null);
-      resetHold(store);
+      // No hands in frame — single batched reset
+      signStreakRef.current = { label: null, count: 0 };
+      store.setFrameState({
+        fps, handCount: 0, hasFace: !!faceLM, features: null,
+        currentSign: null, currentConf: 0, currentSource: 'hand',
+        displaySign: null, displayConf: 0, displaySource: 'hand',
+        rawLandmarks: null, rawLandmarksL: null,
+        bufEntry: { label: '—', dir: '•', speed: 0 },
+        holdFrames: 0, lastDet: null, addSign: null,
+      });
     }
   }, [videoRef, canvasRef]);
 
-  // ─── Hold-to-add helpers ───────────────────────────────────────────────────
-  function handleHold(label, store) {
-    if (!store.settings.holdAdd) { resetHold(store); return; }
-    if (label !== store.lastDet) { store.setHoldFrames(0); store.setLastDet(label); }
-    const next = store.holdFrames + 1;
-    store.setHoldFrames(next);
-    if (next >= HOLD_TARGET) { store.addSign(label); store.setHoldFrames(0); store.setLastDet(null); }
+  // ─── Ring buffer reader ────────────────────────────────────────────────────
+  // Copies the ring into ringOutRef in oldest-first order and returns it.
+  // Called only on LSTM_STEP frames — the allocation cost is amortized.
+  function readRing() {
+    const out  = ringOutRef.current;
+    const head = ringHeadRef.current;
+    for (let i = 0; i < 30; i++) {
+      const slot = (head + i) % 30;
+      out.set(ringBufRef.current.subarray(slot * 63, slot * 63 + 63), i * 63);
+    }
+    return out;
   }
-  function resetHold(store) { store.setHoldFrames(0); store.setLastDet(null); }
+
+  // ─── Hold-to-add (pure — returns new state, no store calls) ──────────────
+  // addSign is { sign, conf } when hold threshold is reached, otherwise null.
+  function computeHold(label, conf, store) {
+    if (!label || !store.settings.holdAdd) return { holdFrames: 0, lastDet: null, addSign: null };
+    if (label !== store.lastDet)           return { holdFrames: 1, lastDet: label, addSign: null };
+    const next = store.holdFrames + 1;
+    if (next >= HOLD_TARGET) return { holdFrames: 0, lastDet: null, addSign: { sign: label, conf } };
+    return { holdFrames: next, lastDet: store.lastDet, addSign: null };
+  }
 
   // ─── Start ─────────────────────────────────────────────────────────────────
   const start = useCallback(async () => {
@@ -343,8 +376,11 @@ export function useMediaPipe(videoRef, canvasRef) {
       canvas.height = video.videoHeight;
     }
 
-    landmarkBufRef.current  = [];
+    ringBufRef.current.fill(0);
+    ringHeadRef.current  = 0;
+    ringCountRef.current = 0;
     signStreakRef.current   = { label: null, count: 0 };
+    lstmFrameRef.current    = 0;
     lastVideoTime.current   = -1;
     store.setCamActive(true);
     animRef.current = requestAnimationFrame(onFrame);

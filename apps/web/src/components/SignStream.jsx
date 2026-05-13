@@ -5,7 +5,7 @@ const AUTO_DELAY = 2500; // ms of silence before auto-interpret fires
 
 export default function SignStream() {
   const {
-    mode, setMode, sentence, currentSign,
+    mode, setMode, sentence, currentSign, currentConf,
     addSign, undoSign, clearSentence,
     aiLoading, setAiText, setAiLoading,
   } = useStore();
@@ -25,7 +25,7 @@ export default function SignStream() {
       const res = await fetch(proxyUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ signs: s }),
+        body: JSON.stringify({ signs: s.map(e => ({ sign: e.sign, conf: e.conf })) }),
       });
       if (!res.ok) throw new Error(`Proxy error: ${res.status}`);
       const data = await res.json();
@@ -129,12 +129,12 @@ export default function SignStream() {
 
       {/* Sentence display */}
       <div style={sentence.length ? sentDisp : { ...sentDisp, ...sentEmpty }}>
-        {sentence.length ? sentence.join(' ') : 'Signs appear here as you hold them...'}
+        {sentence.length ? sentence.map(e => e.sign).join(' ') : 'Signs appear here as you hold them...'}
       </div>
 
       {/* Actions */}
       <div style={{ display:'flex', gap:'.35rem', flexWrap:'wrap' }}>
-        <button className="pb" onClick={() => currentSign && addSign(currentSign)}>+ Add</button>
+        <button className="pb" onClick={() => currentSign && addSign({ sign: currentSign, conf: currentConf })}>+ Add</button>
         <button className="pb d" onClick={undoSign}>← Undo</button>
         <button className="pb d" onClick={clearSentence}>Clear</button>
         <button className="pb p" onClick={handleInterpretBtn} disabled={aiLoading}>✨ Interpret</button>
