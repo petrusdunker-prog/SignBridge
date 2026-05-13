@@ -19,7 +19,7 @@ const TTS_RATES = [
 ];
 
 export default function SettingsModal({ onClose }) {
-  const { settings, toggleSetting, ttsRate, setTtsRate } = useStore();
+  const { settings, toggleSetting, ttsRate, setTtsRate, camActive } = useStore();
 
   return (
     <div style={bg} onClick={onClose}>
@@ -28,16 +28,23 @@ export default function SettingsModal({ onClose }) {
         <div style={title}>Settings</div>
 
         {SETTINGS.map(({ key, label, desc }) => (
-          <div key={key} style={row}>
-            <div>
-              <p style={{ fontSize:'.85rem', fontWeight:500 }}>{label}</p>
-              <small style={{ fontSize:'.7rem', color:'var(--muted)' }}>{desc}</small>
+          <div key={key} style={{ ...row, flexDirection: 'column', alignItems: 'stretch', gap: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <p style={{ fontSize:'.85rem', fontWeight:500 }}>{label}</p>
+                <small style={{ fontSize:'.7rem', color:'var(--muted)' }}>{desc}</small>
+              </div>
+              <button
+                style={{ ...tog, ...(settings[key] ? togOn : {}) }}
+                onClick={() => toggleSetting(key)}
+                aria-label={`Toggle ${label}`}
+              />
             </div>
-            <button
-              style={{ ...tog, ...(settings[key] ? togOn : {}) }}
-              onClick={() => toggleSetting(key)}
-              aria-label={`Toggle ${label}`}
-            />
+            {key === 'faceMesh' && camActive && (
+              <small style={{ fontSize:'.68rem', color:'#b45309', marginTop:'.3rem' }}>
+                ⚠ Stop and restart the camera to apply this change.
+              </small>
+            )}
           </div>
         ))}
 

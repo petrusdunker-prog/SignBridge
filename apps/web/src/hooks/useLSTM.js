@@ -57,7 +57,7 @@ export function predict(landmarkBuf) {
     const probs  = Array.from(output.dataSync());
     const maxIdx = probs.indexOf(Math.max(...probs));
     const conf   = Math.round(probs[maxIdx] * 100);
-    if (conf < 65) return null;
+    if (conf < 70) return null;
     return { label: _labels[maxIdx], conf, source: 'lstm' };
   });
 }

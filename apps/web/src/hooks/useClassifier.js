@@ -66,17 +66,20 @@ export function handSpread(lm) {
 }
 
 export function getZone(wrist, faceLM, poseLM) {
-  // ── Precise mode: use face + pose landmarks when available ─────────────────
-  if (faceLM && poseLM) {
+  // ── Precise mode: FaceLandmarker gives real anchor points ──────────────────
+  // poseLM is optional — chest falls back to chin+offset when absent.
+  // Previously required both faceLM AND poseLM; poseLM is never passed from the
+  // detection loop, so this branch was dead code. Fixed to work with faceLM alone.
+  if (faceLM) {
     const nose      = faceLM[1];
     const forehead  = { x: faceLM[10].x, y: faceLM[10].y - 0.07 };
     const chin      = faceLM[152] || faceLM[10];
     const cheekR    = faceLM[234];
-    const rShoulder = poseLM[12];
-    const lShoulder = poseLM[11];
+    const rShoulder = poseLM?.[12];
+    const lShoulder = poseLM?.[11];
     const chestPt   = rShoulder
       ? { x: (rShoulder.x + (lShoulder?.x || rShoulder.x)) / 2, y: rShoulder.y + 0.08 }
-      : { x: nose.x, y: nose.y + 0.18 };
+      : { x: nose.x, y: chin.y + 0.18 }; // estimate chest below chin
 
     const zones = [
       { name: 'forehead', pt: forehead, thresh: 0.22 },
@@ -93,9 +96,7 @@ export function getZone(wrist, faceLM, poseLM) {
     return closest;
   }
 
-  // ── Fallback: Y-position heuristic (used when face/pose not tracked) ───────
-  // Assumes the signer is centred in frame with the camera at roughly face level.
-  // Thresholds calibrated for a typical 720p webcam setup.
+  // ── Fallback: Y-position heuristic (no FaceLandmarker) ────────────────────
   const y = wrist.y;
   if (y < 0.30) return 'forehead';
   if (y < 0.46) return 'chin';
@@ -278,6 +279,11 @@ export function pushMotion(side, wrist) {
   if (hist.length > MOTION_FRAMES) hist.shift();
 }
 
+export function resetMotionHistory() {
+  motionHistory.R = [];
+  motionHistory.L = [];
+}
+
 export function getVelocity(side) {
   const hist = motionHistory[side];
   if (hist.length < 3) return { vx: 0, vy: 0, speed: '0.000', dir: '—', accel: 0 };
@@ -350,8 +356,9 @@ export function seqPattern(frameBuf) {
   // More frames = fewer false positives; was 6 frames with the old 12-frame buffer.
   const last = frameBuf.slice(-10);
   const allSame  = last.every(f => f.label === last[0].label && f.label !== '—');
-  const allStill = last.every(f => f.speed < 0.08);
-  if (allSame && allStill && last[0].label) {
+  // Allow 1 micro-tremor frame: require 8/10 frames below the speed threshold.
+  const stillCount = last.filter(f => f.speed < 0.08).length;
+  if (allSame && stillCount >= 8 && last[0].label) {
     return { label: last[0].label, conf: 96, source: 'seq' };
   }
   return null;

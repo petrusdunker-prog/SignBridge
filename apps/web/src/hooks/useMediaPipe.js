@@ -4,6 +4,7 @@ import {
   pushMotion, getVelocity, detectMotionPattern, seqPattern,
   classifyTwoHand, classifySingleHand, classifyLetter, classifyNumber,
   getCurlRatios, handSpread, getZone, dist, normalizeLandmarks,
+  resetMotionHistory,
 } from './useClassifier.js';
 import { predict as lstmPredict, isLoaded as lstmLoaded } from './useLSTM.js';
 
@@ -364,6 +365,7 @@ export function useMediaPipe(videoRef, canvasRef) {
     store.setCamActive(false);
     store.clearDetection();
     store.setStats(0, 0, false, false);
+    resetMotionHistory(); // clear stale velocity so next start has a clean buffer
   }, [videoRef, canvasRef]);
 
   return { start, stop };

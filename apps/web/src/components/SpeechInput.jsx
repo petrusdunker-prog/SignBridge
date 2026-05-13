@@ -49,7 +49,10 @@ export default function SpeechInput() {
     };
 
     recogRef.current = r;
-    return () => { try { r.stop(); } catch { /**/ } };
+    return () => {
+      try { r.stop(); } catch { /**/ }
+      useStore.getState().setSttListening(false);
+    };
   }, []);
 
   function toggleListen() {
