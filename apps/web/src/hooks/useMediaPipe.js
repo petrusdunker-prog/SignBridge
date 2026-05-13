@@ -26,7 +26,7 @@ const GESTURE_MAP = {
   'Closed_Fist': zone => zone === 'chest'    ? ['TIRED',     80] : ['YES',       87],
   'Victory':     ()   => ['NO',           91],
   'ILoveYou':    ()   => ['I LOVE YOU',   96],
-  'Pointing_Up': zone => zone === 'chest'    ? ['ME / I',    88] : ['WHERE',     80],
+  'Pointing_Up': zone => zone === 'chest'    ? ['ME',        88] : ['WHERE',     80],
   'Thumb_Down':  ()   => ['NOT',          82],
 };
 

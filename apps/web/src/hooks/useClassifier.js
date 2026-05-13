@@ -217,7 +217,7 @@ export function classifySingleHand(handLM, faceLM, poseLM) {
     if (allCurled && thumbUp)                                       return hit('SORRY',        88, 'body');
     if (allFingersExt)                                              return hit('PLEASE',       86, 'body');
     if (allCurled && !thumbUp)                                      return hit('TIRED',        76, 'body');
-    if (indexExt && !middleExt && !ringExt && !pinkyExt)           return hit('ME / I',       84, 'body');
+    if (indexExt && !middleExt && !ringExt && !pinkyExt)           return hit('ME',           84, 'body');
     // HUNGRY: O-pinch at chest — normalised threshold ≈ 0.5
     if (pinch < 0.5 && !indexExt)                                  return hit('HUNGRY',       78, 'body');
   }
